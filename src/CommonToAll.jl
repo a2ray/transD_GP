@@ -1,6 +1,6 @@
 module CommonToAll
 using PyPlot, StatsBase, Statistics, Distances, LinearAlgebra,
-      DelimitedFiles, ..AbstractOperator, NearestNeighbors
+      DelimitedFiles, ..AbstractOperator, NearestNeighbors, CSV, DataFrames
 
 import ..Options, ..OptionsStat, ..OptionsNonstat, ..OptionsNuisance,
        ..history, ..GP.κ, ..calcfstar!, ..AbstractOperator.Sounding
@@ -10,7 +10,7 @@ export trimxft, assembleTat1, gettargtemps, checkns, getchi2forall, nicenup,
         unwrap, getn, geomprogdepth, assemblemodelsatT, getstats, gethimage,
         assemblenuisancesatT, makenuisancehists, stretchexists,
         makegrid, whichislast, makesummarygrid, makearray, plotNEWSlabels, 
-        plotprofile, gridpoints, splitsoundingsbyline
+        plotprofile, gridpoints, splitsoundingsbyline, dfn2hdr
 
 function trimxft(opt::Options, burninfrac::Float64, temperaturenum::Int)
     x_ft = assembleTat1(opt, :x_ftrain, burninfrac=burninfrac, temperaturenum=temperaturenum)
@@ -975,4 +975,84 @@ function plot1Dpatches(ax, zlist, xlist; alpha=0.25, fc="red", ec="blue", lw=2)
     end    
 end
 
+#filtering the projection added part from oasis 
+function filter_proj!(df)
+    filter!(row -> !contains(row.combined, "RT=PROJ"), df)
 end
+
+#filtering the transformation added part from oasis 
+function filter_trans!(df)
+    filter!(row -> !contains(row.combined,"RT=TRNS"), df)
+end 
+
+#function to read the *dfn file and extract the column number and column names as a *.txt file 
+function dfn2hdr(dfnfile::String)
+    df = CSV.read(dfnfile, DataFrame; header=false);
+    df = coalesce.(df,"")
+    
+    colname = []
+    for col in 1:length(names(df))
+        push!(colname,names(df)[col])
+    end 
+    t = df[!, colname[1]]
+    for i in colname[2:end]         
+		t = t .* df[!, i]                  
+	end 
+    df[!,"combined"] = t
+    filter_proj!(df)
+    filter_trans!(df)
+    row_number = nrow(df)
+    insertcols!(df, 1, :inc => 0)
+    insertcols!(df, 1, :first => 0)
+    insertcols!(df,1, :second => 0)
+
+    cumulative_columns = 0  #this will set up a cumulative variable 
+    
+    for i in 2:size(df,1)   #this will do operations in row level 
+        regex_literal1 = r"NAME=" #few parameters have their names after this keyword 
+        regex_literal2 = r"RT="  #four parameters have their names after this keyword 
+        if !contains(string(df[i,:].combined),regex_literal1)
+            continue
+        end
+
+        if contains(df[i,:].combined,"RT:A4F")
+            df[i,:].combined = replace(df[i,:].combined, ":A4F" => "AA")
+        end 
+
+        inc_regex = r":([0-9]+)F"
+        inc_match = match(inc_regex, df[i,:].combined)  #matching the keyword with the string 
+        if isnothing(inc_match)
+            inc = 0
+            idx2 =  idx2 = split(string(df[i,:].combined), regex_literal1)
+            idx2_r = first.(split.(idx2[2], ":"))
+            
+        else
+            inc = parse(Int64, inc_match.captures[1]) #the outcome is int64
+            idx2 =  idx2 = split(string(df[i,:].combined), regex_literal2)
+            idx2_r = first.(split.(idx2[2], ":"))
+           
+        end
+
+        df[i,:].inc = inc
+        df[i,:].first = cumulative_columns + 1
+        df[i,:].second = df[i,:].first + inc 
+        cumulative_columns += inc + 1
+        
+        if occursin(";END DEFN", idx2_r)  #type is string 
+            idx2_r = first.(split.(idx2_r,";"))
+        else
+            idx2_r = first.(split.(idx2_r,"END"))
+        end
+
+        #start writing to a file here 
+        io = open("header.txt","a")
+        if (df[i,:].first != df[i,:].second)
+            writedlm(io,[df[i,:].first df[i,:].second idx2_r]) 
+        else
+            writedlm(io, [df[i,:].first idx2_r])
+        end
+        close(io)
+    end
+end
+
+end # module CommonToAll
